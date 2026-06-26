@@ -294,7 +294,42 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
   };
 }
 
+function getWalletOpenPositionsFromSqlite(owner, options = {}) {
+  const dbPath = path.resolve(options.dbPath || path.join(process.cwd(), "data/lpscan.sqlite"));
+  const rows = selectJson(
+    dbPath,
+    `
+SELECT position_address
+FROM positions
+WHERE owner = ${sqlText(owner)}
+  AND status = 'Open'
+ORDER BY synced_at DESC, position_address ASC;
+`,
+  );
+
+  const positions = rows
+    .map((row) => getPositionDetailFromSqlite(row.position_address, { dbPath }))
+    .filter((payload) => payload.status === "success")
+    .map((payload) => {
+      const { events, sources, ...position } = payload.data;
+      return {
+        ...position,
+        sources: {
+          detail: sources.detail,
+          unresolvedFields: sources.unresolvedFields,
+        },
+      };
+    });
+
+  return {
+    status: "success",
+    count: positions.length,
+    data: positions,
+  };
+}
+
 module.exports = {
   getPositionDetailFromSqlite,
   getPositionLogsFromSqlite,
+  getWalletOpenPositionsFromSqlite,
 };

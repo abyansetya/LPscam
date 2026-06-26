@@ -5,6 +5,7 @@ const { getOpenPositionsForWallet } = require("../services/onchainOpenPositions.
 const {
   getPositionDetailFromSqlite,
   getPositionLogsFromSqlite,
+  getWalletOpenPositionsFromSqlite,
 } = require("../services/sqlitePositionDetails.cjs");
 
 function readEnv(filePath) {
@@ -46,6 +47,11 @@ function routeWalletOpenPositions(pathname) {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function routeWalletOpenIndexedPositions(pathname) {
+  const match = pathname.match(/^\/wallets\/([^/]+)\/positions\/open-indexed$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 function routePositionDetail(pathname) {
   const match = pathname.match(/^\/positions\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -71,6 +77,13 @@ async function handleRequest(request, response, config) {
     return;
   }
 
+  const indexedOwner = request.method === "GET" ? routeWalletOpenIndexedPositions(url.pathname) : null;
+  if (indexedOwner) {
+    const payload = getWalletOpenPositionsFromSqlite(indexedOwner, { dbPath: config.dbPath });
+    sendJson(response, 200, payload);
+    return;
+  }
+
   const logsPosition = request.method === "GET" ? routePositionLogs(url.pathname) : null;
   if (logsPosition) {
     const payload = getPositionLogsFromSqlite(logsPosition, { dbPath: config.dbPath });
@@ -91,6 +104,7 @@ async function handleRequest(request, response, config) {
     routes: [
       "GET /health",
       "GET /wallets/:owner/positions/open",
+      "GET /wallets/:owner/positions/open-indexed",
       "GET /positions/:position",
       "GET /positions/:position/logs",
     ],
