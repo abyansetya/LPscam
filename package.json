@@ -1,0 +1,17 @@
+{
+  "name": "lpscan",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "api:dev": "node src/api/server.cjs",
+    "compare:wallet": "node scripts/compare-lpagent-wallet.cjs",
+    "ingest:position": "node scripts/ingest-position-sqlite.cjs",
+    "ingest:sqlite": "node scripts/ingest-onchain-sqlite.cjs",
+    "metrics:recompute": "node scripts/recompute-position-metrics-sqlite.cjs",
+    "test:onchain": "node scripts/test-onchain-open-positions.cjs"
+  },
+  "dependencies": {
+    "@meteora-ag/dlmm": "^1.9.10",
+    "@solana/web3.js": "^1.98.4"
+  }
+}
