@@ -33,6 +33,7 @@ async function main() {
     const history = await scanPositionHistory(position, {
       heliusApiKey: env.HELIUS_API_KEY,
       birdeyeApiKeys: env.BIRD_EYE_API_KEY || env.BIRDEYE_API_KEY || "",
+      lpagentKey: env.VITE_LPAGENT_API_KEY || env.LPAGENT_API_KEY || "",
       limit: Number(argValue("limit", "100")),
     });
 

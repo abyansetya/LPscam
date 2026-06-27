@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LP Scan</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Meteora DLMM</p>
+          <h1>LP Positions</h1>
+        </div>
+        <form id="walletForm" class="wallet-form">
+          <input
+            id="walletInput"
+            name="owner"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Wallet address"
+            value="8U3c9b1nCrjgXsVbKtmAMRM1J5JYLTdg5dfvqQZHnaF4"
+          />
+          <button type="submit" title="Search wallet">
+            Search
+          </button>
+        </form>
+      </header>
+
+      <section class="summary-grid" aria-label="Wallet summary">
+        <div class="metric">
+          <span>Positions</span>
+          <strong id="metricCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>Total Input</span>
+          <strong id="metricInput">$0.00</strong>
+        </div>
+        <div class="metric">
+          <span>Total PnL</span>
+          <strong id="metricPnl">$0.00</strong>
+        </div>
+        <div class="metric">
+          <span>Fees</span>
+          <strong id="metricFees">$0.00</strong>
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="Position filters">
+        <div class="segmented">
+          <button class="segment active" data-status="">All</button>
+          <button class="segment" data-status="Open">Open</button>
+          <button class="segment" data-status="Closed">Closed</button>
+        </div>
+        <div class="search-wrap">
+          <span class="icon">⌕</span>
+          <input id="searchInput" autocomplete="off" placeholder="Search pair, pool, position" />
+          <button id="searchButton" type="button" title="Search positions">Search</button>
+        </div>
+      </section>
+
+      <section class="positions-surface">
+        <div class="table-head">
+          <span>Position</span>
+          <span>Status</span>
+          <span>Value</span>
+          <span>Age</span>
+          <span>Claimed | Unclaimed</span>
+          <span>uPNL</span>
+        </div>
+        <div id="positionsList" class="positions-list"></div>
+        <div id="emptyState" class="empty-state hidden">
+          <strong>No positions found</strong>
+          <span>Try another wallet or refresh the indexer.</span>
+        </div>
+      </section>
+    </main>
+
+    <aside id="detailPanel" class="detail-panel" aria-hidden="true">
+      <div class="panel-backdrop" id="panelBackdrop"></div>
+      <section class="panel-card" aria-label="Position detail">
+        <div id="detailContent" class="detail-content"></div>
+      </section>
+    </aside>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

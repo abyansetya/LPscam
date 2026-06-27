@@ -9,6 +9,7 @@ const { getWalletOpenPositionsAutoRefresh } = require("../services/api/walletOpe
 const {
   getPositionDetailFromSqlite,
   getPositionLogsFromSqlite,
+  getWalletPositionsFromSqlite,
   getWalletOpenPositionsFromSqlite,
 } = require("../services/api/sqlitePositionDetails.cjs");
 
@@ -45,6 +46,23 @@ function sendJson(response, statusCode, payload) {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET, OPTIONS",
     "access-control-allow-headers": "content-type",
+  });
+  response.end(body);
+}
+
+function sendStatic(response, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const contentTypes = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+  };
+  const body = fs.readFileSync(filePath);
+  response.writeHead(200, {
+    "content-type": contentTypes[ext] || "application/octet-stream",
+    "content-length": body.length,
   });
   response.end(body);
 }
@@ -118,6 +136,11 @@ function routeWalletOpenPositions(pathname) {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function routeWalletPositions(pathname) {
+  const match = pathname.match(/^\/wallets\/([^/]+)\/positions$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 function routeWalletOpenIndexedPositions(pathname) {
   const match = pathname.match(/^\/wallets\/([^/]+)\/positions\/open-indexed$/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -148,6 +171,43 @@ function errorPayload(code, message, extra = {}) {
   };
 }
 
+function walletPositionSummary(position) {
+  if (!position) return position;
+  const { bins, events, inferredStrategyMetrics, ...summary } = position;
+  return {
+    ...summary,
+    inferredStrategyMetrics: inferredStrategyMetrics
+      ? {
+          liquidityRatio: inferredStrategyMetrics.liquidityRatio,
+          nonZeroBinCount: inferredStrategyMetrics.nonZeroBinCount,
+          activeBinId: inferredStrategyMetrics.activeBinId,
+          lowerBinId: inferredStrategyMetrics.lowerBinId,
+          upperBinId: inferredStrategyMetrics.upperBinId,
+        }
+      : null,
+  };
+}
+
+async function enrichMissingHistory(owner, positions, config) {
+  const missing = (positions || []).filter(
+    (position) => position && position.status === "Open" && position.inputValue == null,
+  );
+  if (!missing.length) return [];
+
+  const results = [];
+  for (const position of missing) {
+    const positionAddress = position.position || position.tokenId;
+    if (!positionAddress) continue;
+    try {
+      const ingest = await ingestPositionHistoryToSqlite(positionAddress, config);
+      results.push({ position: positionAddress, status: "success", ingest });
+    } catch (error) {
+      results.push({ position: positionAddress, status: "failed", error: error.message });
+    }
+  }
+  return results;
+}
+
 async function handleRequest(request, response, config) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
 
@@ -159,6 +219,16 @@ async function handleRequest(request, response, config) {
   if (request.method === "GET" && url.pathname === "/health") {
     sendJson(response, 200, { status: "ok" });
     return;
+  }
+
+  if (request.method === "GET") {
+    const publicRoot = path.resolve(config.root, "public");
+    const routePath = url.pathname === "/" ? "/index.html" : url.pathname;
+    const staticPath = path.resolve(publicRoot, `.${decodeURIComponent(routePath)}`);
+    if (staticPath.startsWith(publicRoot) && fs.existsSync(staticPath) && fs.statSync(staticPath).isFile()) {
+      sendStatic(response, staticPath);
+      return;
+    }
   }
 
   const owner = request.method === "GET" ? routeWalletOpenPositions(url.pathname) : null;
@@ -178,6 +248,65 @@ async function handleRequest(request, response, config) {
       });
     }
     sendJson(response, 200, payload);
+    return;
+  }
+
+  const walletPositionsOwner = request.method === "GET" ? routeWalletPositions(url.pathname) : null;
+  if (walletPositionsOwner) {
+    const status = url.searchParams.get("status") || null;
+    const sqlitePayload = getWalletPositionsFromSqlite(walletPositionsOwner, {
+      dbPath: config.dbPath,
+      status,
+    });
+
+    if (status === "Closed") {
+      sendJson(response, 200, sqlitePayload);
+      return;
+    }
+
+    const includeHistory = url.searchParams.get("history") === "1";
+    let livePayload = await getWalletOpenPositionsHybrid(walletPositionsOwner, config);
+    let historyIngest = [];
+    if (includeHistory && Array.isArray(livePayload.data)) {
+      historyIngest = await enrichMissingHistory(walletPositionsOwner, livePayload.data, config);
+      if (historyIngest.some((entry) => entry.status === "success")) {
+        livePayload = await getWalletOpenPositionsHybrid(walletPositionsOwner, config);
+      }
+    }
+    if (status === "Open") {
+      const data = Array.isArray(livePayload.data) ? livePayload.data.map(walletPositionSummary) : [];
+      sendJson(response, 200, {
+        status: "success",
+        source: livePayload.source || "hybrid_onchain_sqlite",
+        owner: walletPositionsOwner,
+        count: data.length,
+        data,
+        meta: {
+          historyIngest,
+        },
+      });
+      return;
+    }
+
+    const livePositions = Array.isArray(livePayload.data) ? livePayload.data.map(walletPositionSummary) : [];
+    const liveIds = new Set(livePositions.map((position) => position.position || position.tokenId));
+    const historicalPositions = (sqlitePayload.data || []).filter((position) => {
+      const positionId = position.position || position.tokenId;
+      return !liveIds.has(positionId) && position.status !== "Open";
+    });
+    const data = [...livePositions, ...historicalPositions];
+    sendJson(response, 200, {
+      status: "success",
+      source: "hybrid_live_open_with_sqlite_history",
+      owner: walletPositionsOwner,
+      count: data.length,
+      data,
+      meta: {
+        liveOpenCount: livePositions.length,
+        sqliteHistoryCount: historicalPositions.length,
+        historyIngest,
+      },
+    });
     return;
   }
 
@@ -327,6 +456,7 @@ async function handleRequest(request, response, config) {
       "GET /wallets/:owner/positions/open",
       "GET /wallets/:owner/positions/open?mode=hybrid",
       "GET /wallets/:owner/positions/open-indexed",
+      "GET /wallets/:owner/positions",
       "GET /positions/:position?live=0|1&include=events,bins",
       "GET /positions/:position/bins",
       "GET /positions/:position/logs",
@@ -338,8 +468,10 @@ function startServer() {
   const root = path.resolve(__dirname, "..", "..");
   const env = { ...process.env, ...readEnv(path.join(root, ".env")) };
   const config = {
+    root,
     heliusApiKey: env.HELIUS_API_KEY,
     birdeyeApiKeys: env.BIRD_EYE_API_KEY || env.BIRDEYE_API_KEY || "",
+    lpagentKey: env.VITE_LPAGENT_API_KEY || env.LPAGENT_API_KEY || "",
     dbPath: path.resolve(root, env.SQLITE_DB_PATH || "data/lpscan.sqlite"),
     openPositionsTtlSeconds: Number(env.OPEN_POSITIONS_TTL_SECONDS || 60),
   };

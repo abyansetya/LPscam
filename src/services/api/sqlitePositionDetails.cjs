@@ -27,6 +27,13 @@ function isoAgeHours(createdAt) {
   return Math.max(ageMs / 36e5, 0);
 }
 
+function ageHoursBetween(startedAt, endedAt) {
+  if (!startedAt || !endedAt) return null;
+  const ageMs = new Date(endedAt).getTime() - new Date(startedAt).getTime();
+  if (!Number.isFinite(ageMs)) return null;
+  return Math.max(ageMs / 36e5, 0);
+}
+
 function numberOrNull(value) {
   if (value == null || value === "") return null;
   const number = Number(value);
@@ -176,7 +183,10 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
   const createdAt = events.find((event) => event.actionType === "position_create")?.timestamp ||
     events[0]?.timestamp ||
     null;
-  const ageHour = isoAgeHours(createdAt);
+  const closeAt = events.find((event) => event.actionType === "position_close")?.timestamp || null;
+  const ageHour = row.status === "Closed" && closeAt
+    ? ageHoursBetween(createdAt, closeAt)
+    : isoAgeHours(createdAt);
   const amount0Adjusted = adjusted(row.current_amount0_raw, row.token0_decimals);
   const amount1Adjusted = adjusted(row.current_amount1_raw, row.token1_decimals);
   const latestNativePriceUsd = latestPricedEvent && latestPricedEvent.price1
@@ -192,8 +202,19 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
     ? null
     : (outputNative || 0) + collectedFeeNative + currentNative + unCollectedFeeNative - inputNative;
   const pnlPercentNative = inputNative && pnlNative != null ? (pnlNative / inputNative) * 100 : null;
+  const dpr = row.pnl_percent != null && ageHour ? row.pnl_percent / (ageHour / 24) : null;
+  const dprNative = pnlPercentNative != null && ageHour ? pnlPercentNative / (ageHour / 24) : null;
+  const feePercent = row.input_value_usd ? (Number(row.collected_fee_usd || 0) / row.input_value_usd) * 100 : null;
+  const feePercentNative = inputNative ? (collectedFeeNative / inputNative) * 100 : null;
 
-  const unresolvedFields = unresolvedFieldsFromSources(rawSources);
+  const resolvedDerivedFields = new Set([
+    rawSources.strategyType ? "strategyType" : null,
+    dpr == null ? null : "dpr",
+    dprNative == null ? null : "dprNative",
+  ].filter(Boolean));
+  const unresolvedFields = unresolvedFieldsFromSources(rawSources).filter(
+    (field) => !resolvedDerivedFields.has(field),
+  );
 
   return {
     status: "success",
@@ -238,8 +259,8 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
       pnlNative,
       upnl: null,
       owner: row.owner,
-      dpr: null,
-      dprNative: null,
+      dpr,
+      dprNative,
       ageHour,
       decimal0: row.token0_decimals,
       decimal1: row.token1_decimals,
@@ -281,6 +302,12 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
       range: [row.lower_bin_id, row.upper_bin_id, row.active_bin_id],
       value: row.current_value_usd,
       valueNative: currentNative,
+      close_At: closeAt,
+      closeAt,
+      fee: row.collected_fee_usd,
+      feeNative: collectedFeeNative,
+      feePercent,
+      feePercentNative,
       current: {
         amount0: row.current_amount0_raw,
         amount1: row.current_amount1_raw,
@@ -388,8 +415,48 @@ ORDER BY synced_at DESC, position_address ASC;
   };
 }
 
+function getWalletPositionsFromSqlite(owner, options = {}) {
+  const dbPath = path.resolve(options.dbPath || path.join(process.cwd(), "data/lpscan.sqlite"));
+  const status = options.status || null;
+  const statusFilter = status ? `AND p.status = ${sqlText(status)}` : "";
+  const rows = selectJson(
+    dbPath,
+    `
+SELECT p.position_address
+FROM positions p
+WHERE p.owner = ${sqlText(owner)}
+  ${statusFilter}
+ORDER BY datetime(COALESCE(p.onchain_updated_at, p.synced_at)) DESC, p.position_address ASC;
+`,
+  );
+
+  const positions = rows
+    .map((row) => getPositionDetailFromSqlite(row.position_address, { dbPath }))
+    .filter((payload) => payload.status === "success")
+    .map((payload) => {
+      const { events, sources, ...position } = payload.data;
+      return {
+        ...position,
+        sources: {
+          detail: sources.detail,
+          unresolvedFields: sources.unresolvedFields,
+          rawSources: sources.rawSources,
+        },
+      };
+    });
+
+  return {
+    status: "success",
+    source: "sqlite_index",
+    owner,
+    count: positions.length,
+    data: positions,
+  };
+}
+
 module.exports = {
   getPositionDetailFromSqlite,
   getPositionLogsFromSqlite,
+  getWalletPositionsFromSqlite,
   getWalletOpenPositionsFromSqlite,
 };

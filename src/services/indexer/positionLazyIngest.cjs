@@ -24,6 +24,7 @@ async function ingestPositionHistoryToSqlite(positionAddress, config = {}) {
     const history = await scanPositionHistory(positionAddress, {
       heliusApiKey: config.heliusApiKey,
       birdeyeApiKeys: config.birdeyeApiKeys || "",
+      lpagentKey: config.lpagentKey || "",
       limit: Number(config.positionHistoryLimit || 100),
     });
 

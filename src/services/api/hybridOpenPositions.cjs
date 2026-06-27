@@ -1,6 +1,9 @@
 const path = require("path");
 const { getOpenPositionSnapshotsForWallet } = require("../onchain/onchainOpenPositions.cjs");
-const { getWalletOpenPositionsFromSqlite } = require("./sqlitePositionDetails.cjs");
+const {
+  getWalletOpenPositionsFromSqlite,
+  getWalletPositionsFromSqlite,
+} = require("./sqlitePositionDetails.cjs");
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -267,7 +270,7 @@ function mergePosition(sqlitePosition, livePosition) {
 
 async function getWalletOpenPositionsHybrid(owner, config) {
   const dbPath = path.resolve(config.dbPath || path.join(process.cwd(), "data/lpscan.sqlite"));
-  const sqlitePayload = getWalletOpenPositionsFromSqlite(owner, { dbPath });
+  const sqlitePayload = getWalletPositionsFromSqlite(owner, { dbPath });
 
   try {
     const livePayload = await getOpenPositionSnapshotsForWallet(owner, config);
@@ -288,8 +291,9 @@ async function getWalletOpenPositionsHybrid(owner, config) {
       data: positions,
     };
   } catch (error) {
+    const fallbackPayload = getWalletOpenPositionsFromSqlite(owner, { dbPath });
     return {
-      ...sqlitePayload,
+      ...fallbackPayload,
       source: "sqlite_fallback_after_onchain_error",
       stale: true,
       onchainError: error.message,

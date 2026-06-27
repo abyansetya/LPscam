@@ -25,6 +25,84 @@ async function fetchJson(url, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+async function fetchLpagentLogs(lpagentKey, owner, positionAddress) {
+  if (!lpagentKey || !owner || !positionAddress) return [];
+
+  const url =
+    `https://api.lpagent.io/open-api/v1/lp-positions/logs?owner=${encodeURIComponent(owner)}` +
+    `&position=${encodeURIComponent(positionAddress)}`;
+  const payload = await fetchJson(url, {
+    headers: {
+      "x-api-key": lpagentKey,
+      accept: "application/json",
+    },
+  }).catch(() => null);
+
+  return payload && Array.isArray(payload.data) ? payload.data : [];
+}
+
+function lpagentLogActionForEvent(event) {
+  if (event.actionType === "liquidity_add" || event.actionType === "rebalance_increase") {
+    return "increase";
+  }
+  if (event.actionType === "liquidity_remove" || event.actionType === "rebalance_decrease") {
+    return "decrease";
+  }
+  if (event.actionType === "claim_fee") return "collectFee";
+  return null;
+}
+
+function buildLpagentLogMap(logs) {
+  const map = new Map();
+  for (const log of logs || []) {
+    if (!log || !log.txHash) continue;
+    const key = [log.txHash, log.action || ""].join(":");
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(log);
+  }
+  return map;
+}
+
+function findLpagentLogForEvent(logMap, event, expected) {
+  const action = lpagentLogActionForEvent(event);
+  if (!action) return null;
+
+  const candidates = logMap.get([event.signature, action].join(":")) || [];
+  if (!candidates.length) return null;
+
+  const amount0 = String(
+    action === "increase" ? expected.input0 : expected.output0 || event.claimedFee0Raw || 0,
+  );
+  const amount1 = String(
+    action === "increase" ? expected.input1 : expected.output1 || event.claimedFee1Raw || 0,
+  );
+
+  return candidates.find((log) => String(log.amount0 || "0") === amount0 && String(log.amount1 || "0") === amount1) ||
+    candidates[0];
+}
+
+function priceFromLpagentLog(log, tokenAddress, tokenIndex) {
+  if (!log || !tokenAddress) return null;
+  const value = Number(tokenIndex === 0 ? log.price0 : log.price1);
+  if (!Number.isFinite(value)) return null;
+
+  const timestamp = log.timestamp ? Math.floor(new Date(log.timestamp).getTime() / 1000) : null;
+  return {
+    source: "lpagent_open_api_logs",
+    tokenAddress,
+    timestamp,
+    value,
+    priceUnixTime: timestamp,
+    distanceSeconds: 0,
+  };
+}
+
+function latestLogWithRange(logs) {
+  return (logs || [])
+    .filter((log) => log && log.tickLower != null && log.tickUpper != null)
+    .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())[0] || null;
+}
+
 async function rpc(rpcUrl, method, params) {
   return fetchJson(rpcUrl, {
     method: "POST",
@@ -326,6 +404,10 @@ async function scanPositionHistory(positionAddress, config) {
   const token1 = poolMeta && poolMeta.token_y && poolMeta.token_y.address;
   const decimal0 = Number(poolMeta && poolMeta.token_x && poolMeta.token_x.decimals) || 0;
   const decimal1 = Number(poolMeta && poolMeta.token_y && poolMeta.token_y.decimals) || 0;
+  const lpagentLogs = await fetchLpagentLogs(config.lpagentKey, owner, positionAddress);
+  const lpagentLogMap = buildLpagentLogMap(lpagentLogs);
+  const lpagentRangeLog = latestLogWithRange(lpagentLogs);
+  const lpagentStrategyLog = lpagentLogs.find((log) => log && log.strategyType);
   const birdeyeKeyRing = createKeyRing(parseApiKeys(config.birdeyeApiKeys));
   const priceCache = new Map();
   const eventGroups = new Map();
@@ -359,12 +441,15 @@ async function scanPositionHistory(positionAddress, config) {
       const hasReserveCheck = ["liquidity_add", "liquidity_remove", "rebalance", "claim_fee"].includes(event.actionType) &&
         Boolean(expected.input0 || expected.input1 || expected.output0 || expected.output1);
       const hasTokenAccounting = Boolean(expected.input0 || expected.input1 || expected.output0 || expected.output1);
-      const price0 = hasTokenAccounting
+      const lpagentLog = findLpagentLogForEvent(lpagentLogMap, { ...event, actionType, signature: flow.signature }, expected);
+      const lpagentPrice0 = priceFromLpagentLog(lpagentLog, token0, 0);
+      const lpagentPrice1 = priceFromLpagentLog(lpagentLog, token1, 1);
+      const price0 = lpagentPrice0 || (hasTokenAccounting
         ? await getBirdeyeHistoricalPrice(birdeyeKeyRing, token0, flow.blockTime, priceCache)
-        : null;
-      const price1 = hasTokenAccounting
+        : null);
+      const price1 = lpagentPrice1 || (hasTokenAccounting
         ? await getBirdeyeHistoricalPrice(birdeyeKeyRing, token1, flow.blockTime, priceCache)
-        : null;
+        : null);
       const inputValueUsd = usdValue(
         expected.input0,
         decimal0,
@@ -398,6 +483,7 @@ async function scanPositionHistory(positionAddress, config) {
         reserveDeltaCheck: hasReserveCheck ? reserveDeltaCheck(flow, expected) : null,
         decodedDlmmEvent: event,
         decodedDlmmEvents: group,
+        lpagentLog: lpagentLog || null,
         price0,
         price1,
         inputValueUsd,
@@ -414,7 +500,9 @@ async function scanPositionHistory(positionAddress, config) {
       ((b.decodedDlmmEvent && b.decodedDlmmEvent.innerInstructionIndex) || 0),
   );
 
-  const status = events.some((event) => event.actionType === "position_close") ? "Closed" : "Historical";
+  const status = events.some((event) => event.actionType === "position_close")
+    ? "Closed"
+    : accountInfo ? "Open" : "Historical";
   const nonFeeEvents = events.filter((event) => event.actionType !== "claim_fee");
   const feeEvents = events.filter((event) => event.actionType === "claim_fee");
   const input0Raw = nonFeeEvents.reduce((sum, event) => sum + Number(event.input0 || 0), 0);
@@ -447,8 +535,8 @@ async function scanPositionHistory(positionAddress, config) {
       priceUsd: poolMeta && poolMeta.token_y && poolMeta.token_y.price,
     },
     range: {
-      lowerBinId: null,
-      upperBinId: null,
+      lowerBinId: lpagentRangeLog ? Number(lpagentRangeLog.tickLower) : null,
+      upperBinId: lpagentRangeLog ? Number(lpagentRangeLog.tickUpper) : null,
       activeBinId: null,
       inRange: null,
     },
@@ -486,7 +574,12 @@ async function scanPositionHistory(positionAddress, config) {
       position: "helius_rpc_getSignaturesForAddress_position",
       poolMeta: poolMeta ? "meteora_datapi" : "missing_pool_meta",
       events: "helius_getTransaction_dlmm_event_binary",
-      historicalPrice: birdeyeKeyRing.size ? "birdeye_history_price" : "missing_birdeye_key",
+      historicalPrice: lpagentLogs.length
+        ? "lpagent_open_api_logs_with_birdeye_fallback"
+        : birdeyeKeyRing.size ? "birdeye_history_price" : "missing_birdeye_key",
+      strategyType: lpagentStrategyLog ? lpagentStrategyLog.strategyType : null,
+      strategyTypeSource: lpagentStrategyLog ? "lpagent_open_api_logs" : null,
+      rangeSource: lpagentRangeLog ? "lpagent_open_api_logs" : null,
     },
     updatedAt: events.at(-1)?.timestamp || new Date().toISOString(),
   };
