@@ -111,6 +111,7 @@ LIMIT 1;
   }
 
   const row = rows[0];
+  const rawSources = parseJson(row.sources_json, {});
   const eventRows = selectJson(
     dbPath,
     `
@@ -155,13 +156,13 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
     "poolInfo.tickSpacing",
     "priceRange",
     "bins",
-  ];
+  ].filter((field) => !(field === "strategyType" && rawSources.strategyType));
 
   return {
     status: "success",
     data: {
       status: row.status,
-      strategyType: null,
+      strategyType: rawSources.strategyType || null,
       tokenId: row.position_address,
       pairName: pairDisplayName(row.pair_name),
       currentValue: row.current_value_usd == null ? null : String(row.current_value_usd),
@@ -262,7 +263,7 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
         detail: "sqlite_position_events",
         unresolvedFields,
         account: parseJson(row.account_json),
-        rawSources: parseJson(row.sources_json, {}),
+        rawSources,
       },
     },
   };

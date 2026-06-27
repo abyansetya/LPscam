@@ -58,6 +58,43 @@ function priceKey(price) {
   ].join(":");
 }
 
+async function fetchLpagentStrategyType(lpagentKey, owner, position) {
+  if (!lpagentKey || !owner || !position) return null;
+
+  const url =
+    `https://api.lpagent.io/open-api/v1/lp-positions/logs?owner=${encodeURIComponent(owner)}` +
+    `&position=${encodeURIComponent(position)}`;
+  const response = await fetch(url, {
+    headers: {
+      "x-api-key": lpagentKey,
+      accept: "application/json",
+    },
+  }).catch(() => null);
+  if (!response || !response.ok) return null;
+
+  const payload = await response.json().catch(() => null);
+  const log = payload && Array.isArray(payload.data)
+    ? payload.data.find((entry) => entry && entry.strategyType)
+    : null;
+  return log ? log.strategyType : null;
+}
+
+async function enrichPositionMetadata(position, env) {
+  const lpagentKey = env.VITE_LPAGENT_API_KEY || env.LPAGENT_API_KEY;
+  const strategyType = await fetchLpagentStrategyType(lpagentKey, position.owner, position.position);
+  if (!strategyType) return position;
+
+  return {
+    ...position,
+    strategyType,
+    sources: {
+      ...position.sources,
+      strategyType,
+      strategyTypeSource: "lpagent_open_api_logs",
+    },
+  };
+}
+
 function upsertPool(position, now) {
   return `
 INSERT INTO pools (
@@ -329,7 +366,8 @@ async function main() {
     const statements = [];
     let eventCount = 0;
 
-    for (const position of result.data.positions) {
+    for (const rawPosition of result.data.positions) {
+      const position = await enrichPositionMetadata(rawPosition, env);
       statements.push(upsertPool(position, now));
       statements.push(upsertPosition(position, now));
       statements.push(upsertMetrics(position, syncRunId, now));
