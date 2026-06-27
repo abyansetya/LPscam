@@ -296,13 +296,29 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
 
 function getWalletOpenPositionsFromSqlite(owner, options = {}) {
   const dbPath = path.resolve(options.dbPath || path.join(process.cwd(), "data/lpscan.sqlite"));
+  const syncRows = selectJson(
+    dbPath,
+    `
+SELECT started_at, finished_at
+FROM sync_runs
+WHERE owner = ${sqlText(owner)}
+  AND status = 'success'
+ORDER BY id DESC
+LIMIT 1;
+`,
+  );
+  const latestSync = syncRows[0] || null;
+  const freshFilter = latestSync
+    ? `AND p.synced_at >= ${sqlText(latestSync.started_at)}`
+    : "";
   const rows = selectJson(
     dbPath,
     `
-SELECT position_address
-FROM positions
-WHERE owner = ${sqlText(owner)}
-  AND status = 'Open'
+SELECT p.position_address
+FROM positions p
+WHERE p.owner = ${sqlText(owner)}
+  AND p.status = 'Open'
+  ${freshFilter}
 ORDER BY synced_at DESC, position_address ASC;
 `,
   );
@@ -323,6 +339,13 @@ ORDER BY synced_at DESC, position_address ASC;
 
   return {
     status: "success",
+    source: "sqlite_index",
+    syncedAt: latestSync && latestSync.finished_at,
+    syncStartedAt: latestSync && latestSync.started_at,
+    stalenessSeconds:
+      latestSync && latestSync.finished_at
+        ? Math.max((Date.now() - new Date(latestSync.finished_at).getTime()) / 1000, 0)
+        : null,
     count: positions.length,
     data: positions,
   };

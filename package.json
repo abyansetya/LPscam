@@ -8,7 +8,8 @@
     "ingest:position": "node scripts/ingest-position-sqlite.cjs",
     "ingest:sqlite": "node scripts/ingest-onchain-sqlite.cjs",
     "metrics:recompute": "node scripts/recompute-position-metrics-sqlite.cjs",
-    "test:onchain": "node scripts/test-onchain-open-positions.cjs"
+    "test:onchain": "node scripts/test-onchain-open-positions.cjs",
+    "watch:wallet": "node scripts/watch-wallet-sqlite.cjs"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "^1.9.10",
