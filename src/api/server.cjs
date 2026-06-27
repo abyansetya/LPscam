@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { getOpenPositionsForWallet } = require("../services/onchainOpenPositions.cjs");
+const { getWalletOpenPositionsAutoRefresh } = require("../services/walletOpenAutoRefresh.cjs");
 const {
   getPositionDetailFromSqlite,
   getPositionLogsFromSqlite,
@@ -72,7 +73,14 @@ async function handleRequest(request, response, config) {
 
   const owner = request.method === "GET" ? routeWalletOpenPositions(url.pathname) : null;
   if (owner) {
-    const payload = await getOpenPositionsForWallet(owner, config);
+    const forceLive = url.searchParams.get("live") === "1";
+    const ttlSeconds = Number(url.searchParams.get("ttl") || config.openPositionsTtlSeconds);
+    const payload = forceLive
+      ? await getOpenPositionsForWallet(owner, config)
+      : getWalletOpenPositionsAutoRefresh(owner, {
+          dbPath: config.dbPath,
+          ttlSeconds,
+        });
     sendJson(response, 200, payload);
     return;
   }
@@ -118,6 +126,7 @@ function startServer() {
     heliusApiKey: env.HELIUS_API_KEY,
     birdeyeApiKeys: env.BIRD_EYE_API_KEY || env.BIRDEYE_API_KEY || "",
     dbPath: path.resolve(root, env.SQLITE_DB_PATH || "data/lpscan.sqlite"),
+    openPositionsTtlSeconds: Number(env.OPEN_POSITIONS_TTL_SECONDS || 60),
   };
 
   const port = Number(env.PORT || 8787);
