@@ -1,5 +1,7 @@
 const path = require("path");
-const { selectJson, sqlText } = require("../db/sqliteCli.cjs");
+const { selectJson, sqlText } = require("../../db/sqliteCli.cjs");
+
+const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 function parseJson(value, fallback = null) {
   if (!value) return fallback;
@@ -29,6 +31,46 @@ function numberOrNull(value) {
   if (value == null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function nativeValueFromEventUsd(event, usdField) {
+  const usdValue = numberOrNull(event[usdField]);
+  const nativePriceUsd = event.price1 && numberOrNull(event.price1.value);
+  if (usdValue == null || !nativePriceUsd || nativePriceUsd <= 0) return null;
+  return usdValue / nativePriceUsd;
+}
+
+function sumNativeValueFromEvents(events, usdField) {
+  let sawNativePrice = false;
+  const total = events.reduce((sum, event) => {
+    const nativeValue = nativeValueFromEventUsd(event, usdField);
+    if (nativeValue == null) return sum;
+    sawNativePrice = true;
+    return sum + nativeValue;
+  }, 0);
+  return sawNativePrice ? total : null;
+}
+
+function nativeValueFromUsd(usdValue, nativePriceUsd) {
+  const usd = numberOrNull(usdValue);
+  const price = numberOrNull(nativePriceUsd);
+  if (usd == null || !price || price <= 0) return null;
+  return usd / price;
+}
+
+function unresolvedFieldsFromSources(rawSources) {
+  return [
+    "strategyType",
+    "impermanentLoss",
+    "dpr",
+    "dprNative",
+    "yield24h",
+    "apr",
+    "poolInfo.fee",
+    "poolInfo.tickSpacing",
+    "priceRange",
+    "bins",
+  ].filter((field) => !(field === "strategyType" && rawSources.strategyType));
 }
 
 function eventFromRow(row) {
@@ -126,37 +168,32 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
     .slice()
     .reverse()
     .find((event) => event.price0 || event.price1);
-  const collectedFeeNative = events
-    .filter((event) => event.actionType === "claim_fee" && event.outputValueUsd && event.price1 && event.price1.value)
-    .reduce((sum, event) => sum + Number(event.outputValueUsd) / Number(event.price1.value), 0);
+  const nonFeeEvents = events.filter((event) => event.actionType !== "claim_fee");
+  const feeEvents = events.filter((event) => event.actionType === "claim_fee");
+  const inputNative = sumNativeValueFromEvents(nonFeeEvents, "inputValueUsd");
+  const outputNative = sumNativeValueFromEvents(nonFeeEvents, "outputValueUsd");
+  const collectedFeeNative = sumNativeValueFromEvents(feeEvents, "outputValueUsd") || 0;
   const createdAt = events.find((event) => event.actionType === "position_create")?.timestamp ||
     events[0]?.timestamp ||
     null;
   const ageHour = isoAgeHours(createdAt);
   const amount0Adjusted = adjusted(row.current_amount0_raw, row.token0_decimals);
   const amount1Adjusted = adjusted(row.current_amount1_raw, row.token1_decimals);
-  const inputNative = row.token1_mint === "So11111111111111111111111111111111111111112"
-    ? adjusted(row.metric_input1_raw, row.token1_decimals)
+  const latestNativePriceUsd = latestPricedEvent && latestPricedEvent.price1
+    ? numberOrNull(latestPricedEvent.price1.value)
     : null;
-  const outputNative = row.token1_mint === "So11111111111111111111111111111111111111112"
-    ? adjusted(row.metric_output1_raw, row.token1_decimals)
-    : null;
-  const currentNative = row.token1_mint === "So11111111111111111111111111111111111111112"
-    ? amount1Adjusted
-    : null;
+  const currentNative = latestNativePriceUsd && latestNativePriceUsd > 0
+    ? nativeValueFromUsd(row.current_value_usd, latestNativePriceUsd)
+    : row.token1_mint === SOL_MINT
+      ? amount1Adjusted
+      : null;
+  const unCollectedFeeNative = nativeValueFromUsd(row.unclaimed_fee_usd, latestNativePriceUsd);
+  const pnlNative = inputNative == null || currentNative == null || unCollectedFeeNative == null
+    ? null
+    : (outputNative || 0) + collectedFeeNative + currentNative + unCollectedFeeNative - inputNative;
+  const pnlPercentNative = inputNative && pnlNative != null ? (pnlNative / inputNative) * 100 : null;
 
-  const unresolvedFields = [
-    "strategyType",
-    "impermanentLoss",
-    "dpr",
-    "dprNative",
-    "yield24h",
-    "apr",
-    "poolInfo.fee",
-    "poolInfo.tickSpacing",
-    "priceRange",
-    "bins",
-  ].filter((field) => !(field === "strategyType" && rawSources.strategyType));
+  const unresolvedFields = unresolvedFieldsFromSources(rawSources);
 
   return {
     status: "success",
@@ -195,16 +232,10 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
       pnl: {
         value: row.pnl_usd,
         percent: row.pnl_percent,
-        valueNative:
-          latestPricedEvent && latestPricedEvent.price1 && latestPricedEvent.price1.value
-            ? row.pnl_usd / latestPricedEvent.price1.value
-            : null,
-        percentNative: null,
+        valueNative: pnlNative,
+        percentNative: pnlPercentNative,
       },
-      pnlNative:
-        latestPricedEvent && latestPricedEvent.price1 && latestPricedEvent.price1.value
-          ? row.pnl_usd / latestPricedEvent.price1.value
-          : null,
+      pnlNative,
       upnl: null,
       owner: row.owner,
       dpr: null,
@@ -228,7 +259,7 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
         token_decimals: row.token1_decimals,
         token_address: row.token1_mint,
         logo:
-          row.token1_mint === "So11111111111111111111111111111111111111112"
+          row.token1_mint === SOL_MINT
             ? "https://www.dextools.io/resources/tokens/logos/3/solana/So11111111111111111111111111111111111111112.jpg"
             : null,
       },
@@ -259,7 +290,7 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
       unCollectedFee0: adjusted(row.unclaimed_fee0_raw, row.token0_decimals),
       unCollectedFee1: adjusted(row.unclaimed_fee1_raw, row.token1_decimals),
       unCollectedFee: row.unclaimed_fee_usd,
-      unCollectedFeeNative: null,
+      unCollectedFeeNative,
       price0: latestPricedEvent && latestPricedEvent.price0 ? latestPricedEvent.price0.value : null,
       price1: latestPricedEvent && latestPricedEvent.price1 ? latestPricedEvent.price1.value : null,
       bins: null,

@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { getOpenPositionsForWallet } = require("../src/services/onchainOpenPositions.cjs");
+const { getOpenPositionsForWallet } = require("../src/services/onchain/onchainOpenPositions.cjs");
 
 function readEnv(filePath) {
   const env = {};

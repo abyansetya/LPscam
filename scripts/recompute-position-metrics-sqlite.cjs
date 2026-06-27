@@ -1,5 +1,5 @@
 const path = require("path");
-const { recomputePositionMetrics } = require("../src/services/positionMetricsRecompute.cjs");
+const { recomputePositionMetrics } = require("../src/services/indexer/positionMetricsRecompute.cjs");
 
 function argValue(name, fallback = null) {
   const prefix = `--${name}=`;

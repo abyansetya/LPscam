@@ -1,5 +1,5 @@
 const path = require("path");
-const { runTransaction, selectJson, sqlInteger, sqlReal, sqlText } = require("../db/sqliteCli.cjs");
+const { runTransaction, selectJson, sqlInteger, sqlReal, sqlText } = require("../../db/sqliteCli.cjs");
 
 function numeric(value) {
   if (value == null || value === "") return 0;

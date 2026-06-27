@@ -1,7 +1,7 @@
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { getWalletOpenPositionsFromSqlite } = require("./sqlitePositionDetails.cjs");
-const { selectJson, sqlText } = require("../db/sqliteCli.cjs");
+const { selectJson, sqlText } = require("../../db/sqliteCli.cjs");
 
 function latestOwnerSync(dbPath, owner) {
   const rows = selectJson(

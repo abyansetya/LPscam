@@ -16,8 +16,8 @@ function loadDependency(name) {
 const { Connection, PublicKey } = loadDependency("@solana/web3.js");
 const dlmmModule = loadDependency("@meteora-ag/dlmm");
 const DLMM = dlmmModule.default || dlmmModule.DLMM || dlmmModule;
-const { decodeDlmmEventsFromTransaction } = require("./dlmmEventDecoder.cjs");
-const { inferStrategyFromPositionBins } = require("./strategyInference.cjs");
+const { decodeDlmmEventsFromTransaction } = require("../shared/dlmmEventDecoder.cjs");
+const { inferStrategyFromPositionBins } = require("../shared/strategyInference.cjs");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -81,6 +81,41 @@ function hexOrBnToNumber(value) {
 
 function adjustedAmount(rawAmount, decimals) {
   return Number(bnToString(rawAmount) || "0") / 10 ** Number(decimals || 0);
+}
+
+function positionLiquidity(positionData) {
+  const bins = Array.isArray(positionData && positionData.positionBinData)
+    ? positionData.positionBinData
+    : [];
+  const total = bins.reduce((sum, bin) => {
+    try {
+      return sum + BigInt(bnToString(bin.positionLiquidity) || "0");
+    } catch {
+      return sum;
+    }
+  }, 0n);
+  return total.toString();
+}
+
+function binPriceUsd(bin, token1PriceUsd) {
+  const pricePerToken = Number(bin && bin.pricePerToken);
+  const quotePrice = Number(token1PriceUsd || 0);
+  if (!Number.isFinite(pricePerToken) || !Number.isFinite(quotePrice)) return null;
+  return pricePerToken * quotePrice;
+}
+
+function priceRangeFromBins(positionData, activeBinId, token1PriceUsd) {
+  const bins = Array.isArray(positionData && positionData.positionBinData)
+    ? positionData.positionBinData
+    : [];
+  const lowerBinId = Number(positionData && positionData.lowerBinId);
+  const upperBinId = Number(positionData && positionData.upperBinId);
+  const active = Number(activeBinId);
+  const lower = bins.find((bin) => Number(bin.binId) === lowerBinId);
+  const upper = bins.find((bin) => Number(bin.binId) === upperBinId);
+  const activeBin = bins.find((bin) => Number(bin.binId) === active);
+  const values = [lower, upper, activeBin].map((bin) => binPriceUsd(bin, token1PriceUsd));
+  return values.every((value) => value != null) ? values : null;
 }
 
 function usdValue(amount0Raw, decimals0, price0, amount1Raw, decimals1, price1) {
@@ -503,6 +538,139 @@ function matchedPublicKey(decoded) {
   return matched && matched.publicKey;
 }
 
+async function getOpenPositionSnapshotsForWallet(owner, config) {
+  const heliusApiKey = config.heliusApiKey;
+  if (!heliusApiKey) throw new Error("Missing HELIUS_API_KEY");
+
+  const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${heliusApiKey}`;
+  const connection = new Connection(rpcUrl, "confirmed");
+
+  const decodedMap = await DLMM.getAllLbPairPositionsByUser(
+    connection,
+    new PublicKey(owner),
+    { cluster: "mainnet-beta" },
+    { chunkSize: 50, isParallelExecution: true },
+  );
+
+  const positions = [];
+  for (const [, poolData] of decodedMap.entries()) {
+    const poolAddress = String(poolData.publicKey);
+    const poolMeta = await fetchJson(`https://dlmm.datapi.meteora.ag/pools/${poolAddress}`);
+    const token0 = String(poolData.lbPair && poolData.lbPair.tokenXMint);
+    const token1 = String(poolData.lbPair && poolData.lbPair.tokenYMint);
+    const decimal0 = resolveDecimals(poolMeta.token_x);
+    const decimal1 = resolveDecimals(poolMeta.token_y);
+    const activeBinId = Number(bnToString(poolData.lbPair && poolData.lbPair.activeId));
+
+    for (const entry of poolData.lbPairPositionsData || []) {
+      const positionData = entry.positionData;
+      const position = String(entry.publicKey || matchedPublicKey({ poolData, positionData }));
+      const lowerBinId = Number(positionData.lowerBinId);
+      const upperBinId = Number(positionData.upperBinId);
+      const inRange = activeBinId >= lowerBinId && activeBinId <= upperBinId;
+      const total0Raw = bnToString(positionData.totalXAmount);
+      const total1Raw = bnToString(positionData.totalYAmount);
+      const fee0Raw = hexOrBnToNumber(positionData.feeX);
+      const fee1Raw = hexOrBnToNumber(positionData.feeY);
+      const currentValueUsd = usdValue(
+        total0Raw,
+        decimal0,
+        poolMeta.token_x && poolMeta.token_x.price,
+        total1Raw,
+        decimal1,
+        poolMeta.token_y && poolMeta.token_y.price,
+      );
+      const unclaimedFeeUsd = usdValue(
+        fee0Raw,
+        decimal0,
+        poolMeta.token_x && poolMeta.token_x.price,
+        fee1Raw,
+        decimal1,
+        poolMeta.token_y && poolMeta.token_y.price,
+      );
+      const inferredStrategy = inferStrategyFromPositionBins(positionData, activeBinId);
+      const bins = Array.isArray(positionData.positionBinData) ? positionData.positionBinData : [];
+
+      positions.push({
+        status: "Open",
+        owner,
+        position,
+        pool: poolAddress,
+        pairName: poolMeta.name || null,
+        protocol: "meteora",
+        token0: {
+          mint: token0,
+          symbol: poolMeta.token_x && poolMeta.token_x.symbol,
+          decimals: decimal0,
+          priceUsd: poolMeta.token_x && poolMeta.token_x.price,
+        },
+        token1: {
+          mint: token1,
+          symbol: poolMeta.token_y && poolMeta.token_y.symbol,
+          decimals: decimal1,
+          priceUsd: poolMeta.token_y && poolMeta.token_y.price,
+        },
+        range: {
+          lowerBinId,
+          upperBinId,
+          activeBinId,
+          inRange,
+        },
+        priceRange: priceRangeFromBins(
+          positionData,
+          activeBinId,
+          poolMeta.token_y && poolMeta.token_y.price,
+        ),
+        current: {
+          amount0Raw: total0Raw,
+          amount1Raw: total1Raw,
+          amount0: adjustedAmount(total0Raw, decimal0),
+          amount1: adjustedAmount(total1Raw, decimal1),
+          valueUsd: currentValueUsd,
+        },
+        fees: {
+          unclaimedFee0Raw: String(fee0Raw),
+          unclaimedFee1Raw: String(fee1Raw),
+          unclaimedFee0: adjustedAmount(fee0Raw, decimal0),
+          unclaimedFee1: adjustedAmount(fee1Raw, decimal1),
+          unclaimedFeeUsd,
+        },
+        liquidity: positionLiquidity(positionData),
+        bins,
+        poolInfo: {
+          fee: poolMeta.pool_config && poolMeta.pool_config.base_fee_pct,
+          tickSpacing: poolMeta.pool_config && poolMeta.pool_config.bin_step,
+        },
+        apr: poolMeta.apr == null ? null : Number(poolMeta.apr),
+        yield24h:
+          poolMeta.fee_tvl_ratio && poolMeta.fee_tvl_ratio["24h"] != null
+            ? Number(poolMeta.fee_tvl_ratio["24h"])
+            : null,
+        sources: {
+          position: "helius_rpc_meteora_dlmm_sdk",
+          poolMeta: "meteora_datapi",
+          inferredStrategyType: inferredStrategy.inferredStrategyType,
+          inferredStrategySource: inferredStrategy.inferredStrategySource,
+          inferredStrategyConfidence: inferredStrategy.inferredStrategyConfidence,
+          inferredStrategyReason: inferredStrategy.inferredStrategyReason,
+          inferredStrategyMetrics: inferredStrategy.inferredStrategyMetrics,
+        },
+        updatedAt: new Date(hexOrBnToNumber(positionData.lastUpdatedAt) * 1000).toISOString(),
+      });
+    }
+  }
+
+  return {
+    status: "success",
+    data: {
+      owner,
+      count: positions.length,
+      positions,
+      syncedAt: new Date().toISOString(),
+    },
+  };
+}
+
 async function getOpenPositionsForWallet(owner, config) {
   const heliusApiKey = config.heliusApiKey;
   if (!heliusApiKey) throw new Error("Missing HELIUS_API_KEY");
@@ -578,6 +746,7 @@ async function getOpenPositionsForWallet(owner, config) {
         outputValueUsd + collectedFeeUsd + unclaimedFeeUsd + currentValueUsd - inputValueUsd;
       const pnlPercent = inputValueUsd > 0 ? (pnlUsd / inputValueUsd) * 100 : null;
       const inferredStrategy = inferStrategyFromPositionBins(positionData, activeBinId);
+      const bins = Array.isArray(positionData.positionBinData) ? positionData.positionBinData : [];
 
       positions.push({
         status: "Open",
@@ -604,6 +773,11 @@ async function getOpenPositionsForWallet(owner, config) {
           activeBinId,
           inRange,
         },
+        priceRange: priceRangeFromBins(
+          positionData,
+          activeBinId,
+          poolMeta.token_y && poolMeta.token_y.price,
+        ),
         current: {
           amount0Raw: total0Raw,
           amount1Raw: total1Raw,
@@ -619,6 +793,17 @@ async function getOpenPositionsForWallet(owner, config) {
           unclaimedFeeUsd,
           collectedFeeUsd,
         },
+        liquidity: positionLiquidity(positionData),
+        bins,
+        poolInfo: {
+          fee: poolMeta.pool_config && poolMeta.pool_config.base_fee_pct,
+          tickSpacing: poolMeta.pool_config && poolMeta.pool_config.bin_step,
+        },
+        apr: poolMeta.apr == null ? null : Number(poolMeta.apr),
+        yield24h:
+          poolMeta.fee_tvl_ratio && poolMeta.fee_tvl_ratio["24h"] != null
+            ? Number(poolMeta.fee_tvl_ratio["24h"])
+            : null,
         accounting: {
           input0Raw: String(eventAccounting.totals.input0),
           input1Raw: String(eventAccounting.totals.input1),
@@ -662,5 +847,6 @@ async function getOpenPositionsForWallet(owner, config) {
 }
 
 module.exports = {
+  getOpenPositionSnapshotsForWallet,
   getOpenPositionsForWallet,
 };

@@ -1,5 +1,5 @@
 const path = require("path");
-const { decodeDlmmEventsFromTransaction } = require("./dlmmEventDecoder.cjs");
+const { decodeDlmmEventsFromTransaction } = require("../shared/dlmmEventDecoder.cjs");
 
 function loadDependency(name) {
   try {

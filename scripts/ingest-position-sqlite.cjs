@@ -1,5 +1,5 @@
 const path = require("path");
-const { scanPositionHistory } = require("../src/services/positionHistoryScanner.cjs");
+const { scanPositionHistory } = require("../src/services/indexer/positionHistoryScanner.cjs");
 const { ensureDatabase, runTransaction, selectJson, sqlInteger } = require("../src/db/sqliteCli.cjs");
 const {
   argValue,
