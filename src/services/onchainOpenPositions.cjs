@@ -17,6 +17,7 @@ const { Connection, PublicKey } = loadDependency("@solana/web3.js");
 const dlmmModule = loadDependency("@meteora-ag/dlmm");
 const DLMM = dlmmModule.default || dlmmModule.DLMM || dlmmModule;
 const { decodeDlmmEventsFromTransaction } = require("./dlmmEventDecoder.cjs");
+const { inferStrategyFromPositionBins } = require("./strategyInference.cjs");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -576,6 +577,7 @@ async function getOpenPositionsForWallet(owner, config) {
       const pnlUsd =
         outputValueUsd + collectedFeeUsd + unclaimedFeeUsd + currentValueUsd - inputValueUsd;
       const pnlPercent = inputValueUsd > 0 ? (pnlUsd / inputValueUsd) * 100 : null;
+      const inferredStrategy = inferStrategyFromPositionBins(positionData, activeBinId);
 
       positions.push({
         status: "Open",
@@ -637,6 +639,11 @@ async function getOpenPositionsForWallet(owner, config) {
           poolMeta: "meteora_datapi",
           events: "helius_getTransaction_dlmm_event_binary_with_reserve_delta_fallback",
           historicalPrice: birdeyeKeys.length ? "birdeye_history_price" : "missing_birdeye_key",
+          inferredStrategyType: inferredStrategy.inferredStrategyType,
+          inferredStrategySource: inferredStrategy.inferredStrategySource,
+          inferredStrategyConfidence: inferredStrategy.inferredStrategyConfidence,
+          inferredStrategyReason: inferredStrategy.inferredStrategyReason,
+          inferredStrategyMetrics: inferredStrategy.inferredStrategyMetrics,
         },
         updatedAt: new Date(hexOrBnToNumber(positionData.lastUpdatedAt) * 1000).toISOString(),
       });

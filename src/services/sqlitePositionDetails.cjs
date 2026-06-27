@@ -163,6 +163,11 @@ ORDER BY block_time ASC, outer_instruction_index ASC, inner_instruction_index AS
     data: {
       status: row.status,
       strategyType: rawSources.strategyType || null,
+      inferredStrategyType: rawSources.inferredStrategyType || null,
+      inferredStrategySource: rawSources.inferredStrategySource || null,
+      inferredStrategyConfidence: numberOrNull(rawSources.inferredStrategyConfidence),
+      inferredStrategyReason: rawSources.inferredStrategyReason || null,
+      inferredStrategyMetrics: rawSources.inferredStrategyMetrics || null,
       tokenId: row.position_address,
       pairName: pairDisplayName(row.pair_name),
       currentValue: row.current_value_usd == null ? null : String(row.current_value_usd),
